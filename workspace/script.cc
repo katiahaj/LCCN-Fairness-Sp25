@@ -5,53 +5,108 @@
 #include "ns3/applications-module.h"
 #include "ns3/point-to-point-layout-module.h"
 #include "ns3/flow-monitor-module.h"
+
+#include <iostream>
 #include <fstream>
+#include <map>
+#include <string>
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("SimpleTcpDumbbell");
+NS_LOG_COMPONENT_DEFINE("TcpDumbbell");
 
-// Global variables for monitoring
-Ptr<FlowMonitor> g_monitor;
-std::ofstream g_packetLossFile;
-
-void PrintPacketLossStats(double interval) {
-    static uint32_t lastTotalLostPackets = 0;
+double CalculateJainsFairnessIndex(double throughput1, double throughput2)
+{
+    double sum = throughput1 + throughput2;
+    double sumOfSquares = throughput1 * throughput1 + throughput2 * throughput2;
     
-    g_monitor->CheckForLostPackets();
+    if (sumOfSquares == 0.0) return 1.0; // Both zero = perfectly fair
     
-    uint32_t totalLostPackets = 0;
-    uint32_t totalTxPackets = 0;
-    
-    FlowMonitor::FlowStatsContainer stats = g_monitor->GetFlowStats();
-    for (auto& flow : stats) {
-        totalLostPackets += flow.second.lostPackets;
-        totalTxPackets += flow.second.txPackets;
-    }
-    
-    uint32_t newLostPackets = totalLostPackets - lastTotalLostPackets;
-    double currentTime = Simulator::Now().GetSeconds();
-    double packetLossRate = totalTxPackets > 0 ? (double)totalLostPackets / totalTxPackets * 100.0 : 0.0;
-    
-    // Output to console
-    std::cout << "Time: " << currentTime << "s, "
-              << "Total Lost: " << totalLostPackets << ", "
-              << "New Lost: " << newLostPackets << ", "
-              << "Loss Rate: " << packetLossRate << "%" << std::endl;
-    
-    // Output to file
-    g_packetLossFile << currentTime << "," << totalLostPackets << "," 
-                     << newLostPackets << "," << packetLossRate << std::endl;
-    
-    lastTotalLostPackets = totalLostPackets;
-    
-    Simulator::Schedule(Seconds(interval), &PrintPacketLossStats, interval);
+    return (sum * sum) / (2.0 * sumOfSquares);
 }
 
-int main(int argc, char* argv[]) {
-    LogComponentEnable("SimpleTcpDumbbell", LOG_LEVEL_INFO);
+Ptr<FlowMonitor> g_monitor;
+std::ofstream* g_outputFile;
+Ipv4Address g_sender1IpAddress;
+Ipv4Address g_sender2IpAddress;
+FlowMonitorHelper* g_flowMonitorHelper;
 
-    // === Setup network topology ===
+void RecordPeriodicStats(double interval)
+{
+    static std::map<FlowId, uint64_t> lastReceivedBytes;
+    
+    g_monitor->CheckForLostPackets();
+    auto stats = g_monitor->GetFlowStats();
+    auto classifier = DynamicCast<Ipv4FlowClassifier>(g_flowMonitorHelper->GetClassifier());
+
+    double timeInSeconds = Simulator::Now().GetSeconds();
+    double flow1ThroughputBytesPerSecond = 0.0;
+    double flow2ThroughputBytesPerSecond = 0.0;
+    uint32_t flow1PacketLoss = 0;
+    uint32_t flow2PacketLoss = 0;
+    double flow1PacketLossPercent = 0.0;
+    double flow2PacketLossPercent = 0.0;
+
+    for (auto const& [flowId, flowStats] : stats)
+    {
+        auto fiveTuple = classifier->FindFlow(flowId);
+        if (fiveTuple.sourceAddress == g_sender1IpAddress || fiveTuple.sourceAddress == g_sender2IpAddress)
+        {
+            uint64_t previousBytes = (lastReceivedBytes.count(flowId) > 0) ? lastReceivedBytes[flowId] : 0;
+            double throughputBytesPerSecond = (flowStats.rxBytes - previousBytes) / interval;
+            
+            // Calculate packet loss
+            uint32_t packetLoss = flowStats.txPackets - flowStats.rxPackets;
+            double packetLossPercent = (flowStats.txPackets > 0) ? 
+                (static_cast<double>(packetLoss) / flowStats.txPackets) * 100.0 : 0.0;
+            
+            if (fiveTuple.sourceAddress == g_sender1IpAddress)
+            {
+                flow1ThroughputBytesPerSecond = throughputBytesPerSecond;
+                flow1PacketLoss = packetLoss;
+                flow1PacketLossPercent = packetLossPercent;
+            }
+            else
+            {
+                flow2ThroughputBytesPerSecond = throughputBytesPerSecond;
+                flow2PacketLoss = packetLoss;
+                flow2PacketLossPercent = packetLossPercent;
+            }
+                
+            lastReceivedBytes[flowId] = flowStats.rxBytes;
+        }
+    }
+
+    double jainsFairnessIndex = CalculateJainsFairnessIndex(flow1ThroughputBytesPerSecond, flow2ThroughputBytesPerSecond);
+    *g_outputFile << timeInSeconds << "," << flow1ThroughputBytesPerSecond << "," << flow2ThroughputBytesPerSecond << "," 
+                  << flow1PacketLoss << "," << flow1PacketLossPercent << "," 
+                  << flow2PacketLoss << "," << flow2PacketLossPercent << "," 
+                  << jainsFairnessIndex << std::endl;
+
+    Simulator::Schedule(Seconds(interval), &RecordPeriodicStats, interval);
+}
+
+int main(int argc, char* argv[])
+{
+    // --- Simulation Parameters ---
+    std::string tcpCongAlg1 = "NewReno";
+    std::string tcpCongAlg2 = "NewReno";
+    double stopTimeSecs = 10.0;
+
+    // --- Command Line Parsing ---
+    CommandLine cmd;
+    cmd.AddValue("tcpCongAlg1", "TCP algorithm for sender 1", tcpCongAlg1);
+    cmd.AddValue("tcpCongAlg2", "TCP algorithm for sender 2", tcpCongAlg2);
+    cmd.AddValue("stopTime", "Stop time for applications", stopTimeSecs);
+    cmd.Parse(argc, argv);
+
+    // Simple algorithm mapping
+    std::string tcpTypeId1 = "ns3::Tcp" + tcpCongAlg1;
+    std::string tcpTypeId2 = "ns3::Tcp" + tcpCongAlg2;
+
+
+
+    // --- Network Topology Setup ---
     PointToPointHelper p2pLeaf;
     p2pLeaf.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
     p2pLeaf.SetChannelAttribute("Delay", StringValue("20ms"));
@@ -59,78 +114,98 @@ int main(int argc, char* argv[]) {
     PointToPointHelper p2pRouter;
     p2pRouter.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
     p2pRouter.SetChannelAttribute("Delay", StringValue("50ms"));
+    p2pRouter.SetQueue("ns3::DropTailQueue", "MaxSize", StringValue("50p"));
 
     PointToPointDumbbellHelper dumbbell(2, p2pLeaf, 2, p2pLeaf, p2pRouter);
 
+    // --- Extract Node References ---
+    Ptr<Node> sender1 = dumbbell.GetLeft(0);
+    Ptr<Node> sender2 = dumbbell.GetLeft(1);
+    Ptr<Node> receiver1 = dumbbell.GetRight(0);
+    Ptr<Node> receiver2 = dumbbell.GetRight(1);
+
+    // --- Install Internet Stack ---
     InternetStackHelper stack;
     dumbbell.InstallStack(stack);
 
-    // Reset IP address generator right before assignment
-    Ipv4AddressGenerator::Reset();
+    // --- Configure TCP Algorithms AFTER Installing Stack ---
+    TypeId tid1 = TypeId::LookupByName(tcpTypeId1);
+    TypeId tid2 = TypeId::LookupByName(tcpTypeId2);
     
+    // Configure TCP algorithms directly on nodes
+    Ptr<TcpL4Protocol> tcp1 = sender1->GetObject<TcpL4Protocol>();
+    Ptr<TcpL4Protocol> tcp2 = sender2->GetObject<TcpL4Protocol>();
+    
+    tcp1->SetAttribute("SocketType", TypeIdValue(tid1));
+    tcp2->SetAttribute("SocketType", TypeIdValue(tid2));
+
+    // --- IP Address Assignment ---
+    Ipv4AddressGenerator::Reset();
     dumbbell.AssignIpv4Addresses(Ipv4AddressHelper("10.1.0.0", "255.255.255.0"),
                                  Ipv4AddressHelper("10.2.0.0", "255.255.255.0"),
                                  Ipv4AddressHelper("10.3.0.0", "255.255.255.0"));
 
-    // === Setup applications ===
+    // --- Extract IP Address References ---
+    Ipv4Address sender1IpAddress = dumbbell.GetLeftIpv4Address(0);
+    Ipv4Address sender2IpAddress = dumbbell.GetLeftIpv4Address(1);
+    Ipv4Address receiver1IpAddress = dumbbell.GetRightIpv4Address(0);
+    Ipv4Address receiver2IpAddress = dumbbell.GetRightIpv4Address(1);
+
+    // --- Application Setup ---
     uint16_t sinkPort = 8080;
-    Time startTime = Seconds(1.0);
-    Time stopTime = Seconds(10.0);
 
-    PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), sinkPort));
+    // Setup sink applications (one per receiver)
+    PacketSinkHelper sinkHelper("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), sinkPort));
+    ApplicationContainer sink1 = sinkHelper.Install(receiver1);
+    ApplicationContainer sink2 = sinkHelper.Install(receiver2);
+    sink1.Start(Seconds(0.0));
+    sink1.Stop(Seconds(stopTimeSecs));
+    sink2.Start(Seconds(0.0));
+    sink2.Stop(Seconds(stopTimeSecs));
 
-    ApplicationContainer sinkApp1 = packetSinkHelper.Install(dumbbell.GetRight(0));
-    sinkApp1.Start(Seconds(0.0));
-    sinkApp1.Stop(stopTime + Seconds(1.0));
+    // Setup sender applications (continuous transmission), we can apply delay to ".Start" to have offsets
+    BulkSendHelper sender1Helper("ns3::TcpSocketFactory", InetSocketAddress(receiver1IpAddress, sinkPort));
+    sender1Helper.SetAttribute("MaxBytes", UintegerValue(0)); // unlimited
+    ApplicationContainer clientApp1 = sender1Helper.Install(sender1);
+    clientApp1.Start(Seconds(0.0));
+    clientApp1.Stop(Seconds(stopTimeSecs));
 
-    ApplicationContainer sinkApp2 = packetSinkHelper.Install(dumbbell.GetRight(1));
-    sinkApp2.Start(Seconds(0.0));
-    sinkApp2.Stop(stopTime + Seconds(1.0));
-
-    InetSocketAddress remote1(dumbbell.GetRightIpv4Address(0), sinkPort);
-    BulkSendHelper bulkSendClient1("ns3::TcpSocketFactory", remote1);
-    bulkSendClient1.SetAttribute("MaxBytes", UintegerValue(0));
-    ApplicationContainer clientApp1 = bulkSendClient1.Install(dumbbell.GetLeft(0));
-    clientApp1.Start(startTime);
-    clientApp1.Stop(stopTime);
-
-    InetSocketAddress remote2(dumbbell.GetRightIpv4Address(1), sinkPort);
-    BulkSendHelper bulkSendClient2("ns3::TcpSocketFactory", remote2);
-    bulkSendClient2.SetAttribute("MaxBytes", UintegerValue(0));
-    ApplicationContainer clientApp2 = bulkSendClient2.Install(dumbbell.GetLeft(1));
-    clientApp2.Start(startTime);
-    clientApp2.Stop(stopTime);
+    BulkSendHelper sender2Helper("ns3::TcpSocketFactory", InetSocketAddress(receiver2IpAddress, sinkPort));
+    sender2Helper.SetAttribute("MaxBytes", UintegerValue(0)); // unlimited
+    ApplicationContainer clientApp2 = sender2Helper.Install(sender2);
+    clientApp2.Start(Seconds(0.0));
+    clientApp2.Stop(Seconds(stopTimeSecs));
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
-    // === Setup monitoring ===
-    p2pRouter.EnablePcapAll("simple-tcp-dumbbell-router");
+    // --- Setup Flow Monitor and Periodic Measurements ---
+    FlowMonitorHelper flowMonitor;
+    g_monitor = flowMonitor.InstallAll();
+    g_flowMonitorHelper = &flowMonitor;
+    g_sender1IpAddress = sender1IpAddress;
+    g_sender2IpAddress = sender2IpAddress;
 
-    FlowMonitorHelper flowmon;
-    Ptr<FlowMonitor> monitor = flowmon.InstallAll();
+    // Setup output file
+    std::string filename = "scratch/workspace/results-" + tcpCongAlg1 + "-vs-" + tcpCongAlg2 + ".csv";
+    std::ofstream outputFile(filename);
+    outputFile << std::fixed; // Use fixed-point notation, no scientific notation
+    g_outputFile = &outputFile;
     
-    // Initialize global monitor and output file
-    g_monitor = monitor;
-    g_packetLossFile.open("./scratch/workspace/packet-loss-over-time.csv");
-    g_packetLossFile << "Time(s),TotalLostPackets,NewLostPackets,LossRate(%)" << std::endl;
+    outputFile << "# TCP Comparison: " << tcpCongAlg1 << " vs " << tcpCongAlg2 << std::endl;
+    outputFile << "# Simulation time: " << stopTimeSecs << " seconds" << std::endl;
+    outputFile << "TimeInSeconds,Flow1ThroughputBytesPerSecond,Flow2ThroughputBytesPerSecond,Flow1PacketLoss,Flow1PacketLossPercent,Flow2PacketLoss,Flow2PacketLossPercent,JainsFairnessIndex" << std::endl;
     
-    // Schedule periodic packet loss reporting every 0.5 seconds
-    Simulator::Schedule(Seconds(0.5), &PrintPacketLossStats, 0.5);
+    // Schedule periodic measurements 
+    double measurementInterval = 0.1;
+    Simulator::Schedule(Seconds(measurementInterval), &RecordPeriodicStats, measurementInterval);
 
-    // === Run simulation ===
-    NS_LOG_INFO("Running Simulation.");
-    Simulator::Stop(stopTime + Seconds(5.0));
+    // --- Run Simulation ---
+    Simulator::Stop(Seconds(stopTimeSecs));
     Simulator::Run();
 
-    // === Save results ===
-    monitor->CheckForLostPackets();
-    monitor->SerializeToXmlFile("./scratch/workspace/simple-tcp-dumbbell-flowmon.xml", true, true);
-    
-    // Close the packet loss file
-    g_packetLossFile.close();
+    outputFile.close();
+    std::cout << "Results saved to " << filename << std::endl;
 
-    NS_LOG_INFO("Simulation Finished.");
     Simulator::Destroy();
-
     return 0;
 }
