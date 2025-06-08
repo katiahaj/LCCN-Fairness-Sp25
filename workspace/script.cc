@@ -107,12 +107,13 @@ int main(int argc, char* argv[])
 
 
     // --- Network Topology Setup ---
+    // Create initial symmetric topology
     PointToPointHelper p2pLeaf;
-    p2pLeaf.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
-    p2pLeaf.SetChannelAttribute("Delay", StringValue("20ms"));
+    p2pLeaf.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    p2pLeaf.SetChannelAttribute("Delay", StringValue("10ms"));
 
     PointToPointHelper p2pRouter;
-    p2pRouter.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    p2pRouter.SetDeviceAttribute("DataRate", StringValue("5Mbps"));      // Shared bottleneck
     p2pRouter.SetChannelAttribute("Delay", StringValue("50ms"));
     p2pRouter.SetQueue("ns3::DropTailQueue", "MaxSize", StringValue("50p"));
 
@@ -123,6 +124,23 @@ int main(int argc, char* argv[])
     Ptr<Node> sender2 = dumbbell.GetLeft(1);
     Ptr<Node> receiver1 = dumbbell.GetRight(0);
     Ptr<Node> receiver2 = dumbbell.GetRight(1);
+
+    // --- Modify Individual Sender Link Characteristics for Asymmetry ---
+    // Get the network devices for each sender
+    Ptr<NetDevice> sender1Device = sender1->GetDevice(0);
+    Ptr<NetDevice> sender2Device = sender2->GetDevice(0);
+    
+    // Cast to PointToPointNetDevice to modify attributes
+    Ptr<PointToPointNetDevice> p2pSender1 = DynamicCast<PointToPointNetDevice>(sender1Device);
+    Ptr<PointToPointNetDevice> p2pSender2 = DynamicCast<PointToPointNetDevice>(sender2Device);
+    
+    // Create ONLY RTT asymmetry - remove bandwidth asymmetry to isolate algorithm differences
+    // Both senders get same high bandwidth, but different RTTs
+    p2pSender1->SetAttribute("DataRate", DataRateValue(DataRate("100Mbps")));  // High bandwidth
+    p2pSender1->GetChannel()->SetAttribute("Delay", TimeValue(Time("5ms")));   // Low RTT
+    
+    p2pSender2->SetAttribute("DataRate", DataRateValue(DataRate("100Mbps")));  // Same high bandwidth
+    p2pSender2->GetChannel()->SetAttribute("Delay", TimeValue(Time("100ms"))); // High RTT (20x difference)
 
     // --- Install Internet Stack ---
     InternetStackHelper stack;
