@@ -5,11 +5,13 @@
 #include "ns3/applications-module.h"
 #include "ns3/point-to-point-layout-module.h"
 #include "ns3/flow-monitor-module.h"
+#include "ns3/bulk-send-application.h"
 
 #include <iostream>
 #include <fstream>
 #include <map>
 #include <string>
+#include <climits>
 
 using namespace ns3;
 
@@ -30,6 +32,13 @@ std::ofstream* g_outputFile;
 Ipv4Address g_sender1IpAddress;
 Ipv4Address g_sender2IpAddress;
 FlowMonitorHelper* g_flowMonitorHelper;
+uint32_t g_sender1Cwnd = 0;
+uint32_t g_sender2Cwnd = 0;
+ApplicationContainer g_clientApp1;
+ApplicationContainer g_clientApp2;
+std::string g_tcpAlg1, g_tcpAlg2;
+Ptr<Node> g_sender1Node;
+Ptr<Node> g_sender2Node;
 
 void RecordPeriodicStats(double interval)
 {
@@ -81,16 +90,41 @@ void RecordPeriodicStats(double interval)
     *g_outputFile << timeInSeconds << "," << flow1ThroughputBytesPerSecond << "," << flow2ThroughputBytesPerSecond << "," 
                   << flow1PacketLoss << "," << flow1PacketLossPercent << "," 
                   << flow2PacketLoss << "," << flow2PacketLossPercent << "," 
-                  << jainsFairnessIndex << std::endl;
+                  << jainsFairnessIndex << "," << g_sender1Cwnd << "," << g_sender2Cwnd << std::endl;
 
     Simulator::Schedule(Seconds(interval), &RecordPeriodicStats, interval);
+}
+
+void
+Sender1CwndChange(uint32_t oldCwnd, uint32_t newCwnd)
+{
+    g_sender1Cwnd = newCwnd;
+}
+
+void
+Sender2CwndChange(uint32_t oldCwnd, uint32_t newCwnd)
+{
+    g_sender2Cwnd = newCwnd;
+}
+
+void
+ConnectCwndTraces()
+{
+    uint32_t nodeId1 = g_sender1Node->GetId();
+    uint32_t nodeId2 = g_sender2Node->GetId();
+
+    std::string path1 = "/NodeList/" + std::to_string(nodeId1) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow";
+    std::string path2 = "/NodeList/" + std::to_string(nodeId2) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow";
+
+    Config::ConnectWithoutContext(path1, MakeCallback(&Sender1CwndChange));
+    Config::ConnectWithoutContext(path2, MakeCallback(&Sender2CwndChange));
 }
 
 int main(int argc, char* argv[])
 {
     // --- Simulation Parameters ---
     std::string tcpCongAlg1 = "NewReno";
-    std::string tcpCongAlg2 = "NewReno";
+    std::string tcpCongAlg2 = "Cubic";
     double stopTimeSecs = 10.0;
 
     // --- Command Line Parsing ---
@@ -100,11 +134,12 @@ int main(int argc, char* argv[])
     cmd.AddValue("stopTime", "Stop time for applications", stopTimeSecs);
     cmd.Parse(argc, argv);
 
+    g_tcpAlg1 = tcpCongAlg1;
+    g_tcpAlg2 = tcpCongAlg2;
+
     // Simple algorithm mapping
     std::string tcpTypeId1 = "ns3::Tcp" + tcpCongAlg1;
     std::string tcpTypeId2 = "ns3::Tcp" + tcpCongAlg2;
-
-
 
     // --- Network Topology Setup ---
     // Create initial symmetric topology
@@ -124,6 +159,9 @@ int main(int argc, char* argv[])
     Ptr<Node> sender2 = dumbbell.GetLeft(1);
     Ptr<Node> receiver1 = dumbbell.GetRight(0);
     Ptr<Node> receiver2 = dumbbell.GetRight(1);
+
+    g_sender1Node = sender1;
+    g_sender2Node = sender2;
 
     // --- Modify Individual Sender Link Characteristics for Asymmetry ---
     // Get the network devices for each sender
@@ -184,15 +222,15 @@ int main(int argc, char* argv[])
     // Setup sender applications (continuous transmission), we can apply delay to ".Start" to have offsets
     BulkSendHelper sender1Helper("ns3::TcpSocketFactory", InetSocketAddress(receiver1IpAddress, sinkPort));
     sender1Helper.SetAttribute("MaxBytes", UintegerValue(0)); // unlimited
-    ApplicationContainer clientApp1 = sender1Helper.Install(sender1);
-    clientApp1.Start(Seconds(0.0));
-    clientApp1.Stop(Seconds(stopTimeSecs));
+    g_clientApp1 = sender1Helper.Install(sender1);
+    g_clientApp1.Start(Seconds(0.0));
+    g_clientApp1.Stop(Seconds(stopTimeSecs));
 
     BulkSendHelper sender2Helper("ns3::TcpSocketFactory", InetSocketAddress(receiver2IpAddress, sinkPort));
     sender2Helper.SetAttribute("MaxBytes", UintegerValue(0)); // unlimited
-    ApplicationContainer clientApp2 = sender2Helper.Install(sender2);
-    clientApp2.Start(Seconds(0.0));
-    clientApp2.Stop(Seconds(stopTimeSecs));
+    g_clientApp2 = sender2Helper.Install(sender2);
+    g_clientApp2.Start(Seconds(0.0));
+    g_clientApp2.Stop(Seconds(stopTimeSecs));
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
@@ -211,10 +249,11 @@ int main(int argc, char* argv[])
     
     outputFile << "# TCP Comparison: " << tcpCongAlg1 << " vs " << tcpCongAlg2 << std::endl;
     outputFile << "# Simulation time: " << stopTimeSecs << " seconds" << std::endl;
-    outputFile << "TimeInSeconds,Flow1ThroughputBytesPerSecond,Flow2ThroughputBytesPerSecond,Flow1PacketLoss,Flow1PacketLossPercent,Flow2PacketLoss,Flow2PacketLossPercent,JainsFairnessIndex" << std::endl;
-    
+    outputFile << "TimeInSeconds,Flow1ThroughputBytesPerSecond,Flow2ThroughputBytesPerSecond,Flow1PacketLoss,Flow1PacketLossPercent,Flow2PacketLoss,Flow2PacketLossPercent,JainsFairnessIndex,Sender1CWND,Sender2CWND" << std::endl;
     // Schedule periodic measurements 
     double measurementInterval = 0.1;
+    
+    Simulator::Schedule(Seconds(measurementInterval), &ConnectCwndTraces); // small delay to ensure sockets exist, otherwise it doesn't work
     Simulator::Schedule(Seconds(measurementInterval), &RecordPeriodicStats, measurementInterval);
 
     // --- Run Simulation ---
