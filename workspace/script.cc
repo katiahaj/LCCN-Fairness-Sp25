@@ -122,6 +122,9 @@ ConnectCwndTraces()
 
 int main(int argc, char* argv[])
 {
+    Config::SetDefault ("ns3::TcpSocket::InitialSlowStartThreshold",
+                    UintegerValue (65535));    // 64 KiB initial ssthresh, seems to fix Bbr infinite cwnd bug
+
     // --- Simulation Parameters ---
     std::string tcpCongAlg1 = "NewReno";
     std::string tcpCongAlg2 = "Cubic";
