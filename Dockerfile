@@ -15,16 +15,19 @@ RUN apt-get update && \
 
 RUN apt-get update && apt-get install -y python3-pip && \
     rm -rf /var/lib/apt/lists/*
-RUN pip3 install cppyy
+
+RUN pip3 install cppyy pandas matplotlib
 
 ARG NS3_VERSION=3.43
 RUN curl -fsSL https://www.nsnam.org/releases/ns-allinone-${NS3_VERSION}.tar.bz2 \
-     -o /tmp/ns-allinone-${NS3_VERSION}.tar.bz2 && \
+      -o /tmp/ns-allinone-${NS3_VERSION}.tar.bz2 && \
     tar xjf /tmp/ns-allinone-${NS3_VERSION}.tar.bz2 -C /opt && \
     rm /tmp/ns-allinone-${NS3_VERSION}.tar.bz2
 
 WORKDIR /opt/ns-allinone-${NS3_VERSION}/ns-${NS3_VERSION}
-RUN ./ns3 configure --enable-examples --enable-tests --enable-python-bindings && \
+
+RUN ./ns3 configure --enable-examples --enable-tests --enable-python-bindings \
+    --enable-modules=internet,point-to-point,point-to-point-layout,applications,flow-monitor,traffic-control && \
     ./ns3 build
 
 ENV NS3_ROOT=/opt/ns-allinone-${NS3_VERSION}/ns-${NS3_VERSION}

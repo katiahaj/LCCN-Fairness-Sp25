@@ -6,266 +6,237 @@
 #include "ns3/point-to-point-layout-module.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/bulk-send-application.h"
+#include "ns3/tcp-dctcp.h"
+#include "ns3/traffic-control-module.h"
 
 #include <iostream>
 #include <fstream>
-#include <map>
+#include <vector>
 #include <string>
-#include <climits>
+#include <algorithm>
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("TcpDumbbell");
+NS_LOG_COMPONENT_DEFINE("TcpExperimentFramework");
 
-double CalculateJainsFairnessIndex(double throughput1, double throughput2)
-{
-    double sum = throughput1 + throughput2;
-    double sumOfSquares = throughput1 * throughput1 + throughput2 * throughput2;
-    
-    if (sumOfSquares == 0.0) return 1.0; // Both zero = perfectly fair
-    
-    return (sum * sum) / (2.0 * sumOfSquares);
-}
-
+// Global Variables
+uint32_t g_nFlows;
 Ptr<FlowMonitor> g_monitor;
 std::ofstream* g_outputFile;
-Ipv4Address g_sender1IpAddress;
-Ipv4Address g_sender2IpAddress;
 FlowMonitorHelper* g_flowMonitorHelper;
-uint32_t g_sender1Cwnd = 0;
-uint32_t g_sender2Cwnd = 0;
-ApplicationContainer g_clientApp1;
-ApplicationContainer g_clientApp2;
-std::string g_tcpAlg1, g_tcpAlg2;
-Ptr<Node> g_sender1Node;
-Ptr<Node> g_sender2Node;
+NodeContainer g_senderNodes;
+Ipv4InterfaceContainer g_senderInterfaces;
+std::vector<uint32_t> g_cwnd;
 
+// Helper Functions
+double CalculateJainsFairnessIndex(const std::vector<double>& throughputs)
+{
+    double sum = 0, sumOfSquares = 0;
+    for (const auto& x : throughputs) { sum += x; sumOfSquares += x * x; }
+    if (sumOfSquares == 0) return 1.0;
+    return (sum * sum) / (throughputs.size() * sumOfSquares);
+}
+
+// Statistics and Tracing
 void RecordPeriodicStats(double interval)
 {
     static std::map<FlowId, uint64_t> lastReceivedBytes;
-    
     g_monitor->CheckForLostPackets();
     auto stats = g_monitor->GetFlowStats();
     auto classifier = DynamicCast<Ipv4FlowClassifier>(g_flowMonitorHelper->GetClassifier());
-
     double timeInSeconds = Simulator::Now().GetSeconds();
-    double flow1ThroughputBytesPerSecond = 0.0;
-    double flow2ThroughputBytesPerSecond = 0.0;
-    uint32_t flow1PacketLoss = 0;
-    uint32_t flow2PacketLoss = 0;
-    double flow1PacketLossPercent = 0.0;
-    double flow2PacketLossPercent = 0.0;
-
+    std::vector<double> throughputs(g_nFlows, 0.0);
+    std::vector<uint32_t> losses(g_nFlows, 0);
     for (auto const& [flowId, flowStats] : stats)
     {
         auto fiveTuple = classifier->FindFlow(flowId);
-        if (fiveTuple.sourceAddress == g_sender1IpAddress || fiveTuple.sourceAddress == g_sender2IpAddress)
+        for (uint32_t i = 0; i < g_nFlows; ++i)
         {
-            uint64_t previousBytes = (lastReceivedBytes.count(flowId) > 0) ? lastReceivedBytes[flowId] : 0;
-            double throughputBytesPerSecond = (flowStats.rxBytes - previousBytes) / interval;
-            
-            // Calculate packet loss
-            uint32_t packetLoss = flowStats.txPackets - flowStats.rxPackets;
-            double packetLossPercent = (flowStats.txPackets > 0) ? 
-                (static_cast<double>(packetLoss) / flowStats.txPackets) * 100.0 : 0.0;
-            
-            if (fiveTuple.sourceAddress == g_sender1IpAddress)
+            if (g_senderInterfaces.GetAddress(i) == fiveTuple.sourceAddress)
             {
-                flow1ThroughputBytesPerSecond = throughputBytesPerSecond;
-                flow1PacketLoss = packetLoss;
-                flow1PacketLossPercent = packetLossPercent;
+                throughputs[i] = (flowStats.rxBytes - (lastReceivedBytes.count(flowId) ? lastReceivedBytes[flowId] : 0)) / interval;
+                losses[i] = flowStats.txPackets - flowStats.rxPackets;
+                lastReceivedBytes[flowId] = flowStats.rxBytes;
+                break;
             }
-            else
-            {
-                flow2ThroughputBytesPerSecond = throughputBytesPerSecond;
-                flow2PacketLoss = packetLoss;
-                flow2PacketLossPercent = packetLossPercent;
-            }
-                
-            lastReceivedBytes[flowId] = flowStats.rxBytes;
         }
     }
-
-    double jainsFairnessIndex = CalculateJainsFairnessIndex(flow1ThroughputBytesPerSecond, flow2ThroughputBytesPerSecond);
-    *g_outputFile << timeInSeconds << "," << flow1ThroughputBytesPerSecond << "," << flow2ThroughputBytesPerSecond << "," 
-                  << flow1PacketLoss << "," << flow1PacketLossPercent << "," 
-                  << flow2PacketLoss << "," << flow2PacketLossPercent << "," 
-                  << jainsFairnessIndex << "," << g_sender1Cwnd << "," << g_sender2Cwnd << std::endl;
-
+    double fairness = CalculateJainsFairnessIndex(throughputs);
+    *g_outputFile << timeInSeconds;
+    for(const auto& val : throughputs) *g_outputFile << "," << val;
+    for(const auto& val : losses) *g_outputFile << "," << val;
+    for(const auto& val : g_cwnd) *g_outputFile << "," << val;
+    *g_outputFile << "," << fairness << std::endl;
     Simulator::Schedule(Seconds(interval), &RecordPeriodicStats, interval);
 }
 
-void
-Sender1CwndChange(uint32_t oldCwnd, uint32_t newCwnd)
+void CwndChangeCallback0(uint32_t oldCwnd, uint32_t newCwnd) { if (!g_cwnd.empty()) g_cwnd[0] = newCwnd; }
+void CwndChangeCallback1(uint32_t oldCwnd, uint32_t newCwnd) { if (g_cwnd.size() > 1) g_cwnd[1] = newCwnd; }
+void CwndChangeCallback2(uint32_t oldCwnd, uint32_t newCwnd) { if (g_cwnd.size() > 2) g_cwnd[2] = newCwnd; }
+void CwndChangeCallback3(uint32_t oldCwnd, uint32_t newCwnd) { if (g_cwnd.size() > 3) g_cwnd[3] = newCwnd; }
+
+void ConnectCwndTraces()
 {
-    g_sender1Cwnd = newCwnd;
-}
-
-void
-Sender2CwndChange(uint32_t oldCwnd, uint32_t newCwnd)
-{
-    g_sender2Cwnd = newCwnd;
-}
-
-void
-ConnectCwndTraces()
-{
-    uint32_t nodeId1 = g_sender1Node->GetId();
-    uint32_t nodeId2 = g_sender2Node->GetId();
-
-    std::string path1 = "/NodeList/" + std::to_string(nodeId1) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow";
-    std::string path2 = "/NodeList/" + std::to_string(nodeId2) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow";
-
-    Config::ConnectWithoutContext(path1, MakeCallback(&Sender1CwndChange));
-    Config::ConnectWithoutContext(path2, MakeCallback(&Sender2CwndChange));
+    if (g_nFlows > 0) Config::ConnectWithoutContext("/NodeList/" + std::to_string(g_senderNodes.Get(0)->GetId()) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow", MakeCallback(&CwndChangeCallback0));
+    if (g_nFlows > 1) Config::ConnectWithoutContext("/NodeList/" + std::to_string(g_senderNodes.Get(1)->GetId()) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow", MakeCallback(&CwndChangeCallback1));
+    if (g_nFlows > 2) Config::ConnectWithoutContext("/NodeList/" + std::to_string(g_senderNodes.Get(2)->GetId()) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow", MakeCallback(&CwndChangeCallback2));
+    if (g_nFlows > 3) Config::ConnectWithoutContext("/NodeList/" + std::to_string(g_senderNodes.Get(3)->GetId()) + "/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow", MakeCallback(&CwndChangeCallback3));
 }
 
 int main(int argc, char* argv[])
 {
-    Config::SetDefault ("ns3::TcpSocket::InitialSlowStartThreshold",
-                    UintegerValue (65535));    // 64 KiB initial ssthresh, seems to fix Bbr infinite cwnd bug
+    Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(1448));
+    Config::SetDefault("ns3::TcpSocket::InitialSlowStartThreshold", UintegerValue(65535));
+    GlobalValue::Bind("ChecksumEnabled", BooleanValue(false));
 
-    // --- Simulation Parameters ---
-    std::string tcpCongAlg1 = "NewReno";
-    std::string tcpCongAlg2 = "Cubic";
-    double stopTimeSecs = 10.0;
+    std::string scenario = "AllCubic", outputFile = "/workspace/results.csv";
+    bool asymmetricRtt = false;
+    double stopTimeSecs = 20.0;
+    uint32_t bottleneckQueueSize = 100;
 
-    // --- Command Line Parsing ---
     CommandLine cmd;
-    cmd.AddValue("tcpCongAlg1", "TCP algorithm for sender 1", tcpCongAlg1);
-    cmd.AddValue("tcpCongAlg2", "TCP algorithm for sender 2", tcpCongAlg2);
+    cmd.AddValue("scenario", "TCP scenario", scenario);
+    cmd.AddValue("asymmetricRtt", "Enable RTT asymmetry", asymmetricRtt);
     cmd.AddValue("stopTime", "Stop time for applications", stopTimeSecs);
+    cmd.AddValue("queueSize", "Bottleneck queue size", bottleneckQueueSize);
+    cmd.AddValue("outputFile", "File path to save results", outputFile);
     cmd.Parse(argc, argv);
 
-    g_tcpAlg1 = tcpCongAlg1;
-    g_tcpAlg2 = tcpCongAlg2;
+    if (scenario == "AllMixed") {
+        g_nFlows = 4;
+    } else {
+        g_nFlows = 2;
+    }
+    g_cwnd.resize(g_nFlows, 0);
 
-    // Simple algorithm mapping
-    std::string tcpTypeId1 = "ns3::Tcp" + tcpCongAlg1;
-    std::string tcpTypeId2 = "ns3::Tcp" + tcpCongAlg2;
-
-    // --- Network Topology Setup ---
-    // Create initial symmetric topology
-    PointToPointHelper p2pLeaf;
-    p2pLeaf.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
-    p2pLeaf.SetChannelAttribute("Delay", StringValue("10ms"));
-
-    PointToPointHelper p2pRouter;
-    p2pRouter.SetDeviceAttribute("DataRate", StringValue("5Mbps"));      // Shared bottleneck
-    p2pRouter.SetChannelAttribute("Delay", StringValue("50ms"));
-    p2pRouter.SetQueue("ns3::DropTailQueue", "MaxSize", StringValue("50p"));
-
-    PointToPointDumbbellHelper dumbbell(2, p2pLeaf, 2, p2pLeaf, p2pRouter);
-
-    // --- Extract Node References ---
-    Ptr<Node> sender1 = dumbbell.GetLeft(0);
-    Ptr<Node> sender2 = dumbbell.GetLeft(1);
-    Ptr<Node> receiver1 = dumbbell.GetRight(0);
-    Ptr<Node> receiver2 = dumbbell.GetRight(1);
-
-    g_sender1Node = sender1;
-    g_sender2Node = sender2;
-
-    // --- Modify Individual Sender Link Characteristics for Asymmetry ---
-    // Get the network devices for each sender
-    Ptr<NetDevice> sender1Device = sender1->GetDevice(0);
-    Ptr<NetDevice> sender2Device = sender2->GetDevice(0);
+    std::vector<std::string> tcpAlgorithms(g_nFlows);
+    bool ecnEnabled = false;
     
-    // Cast to PointToPointNetDevice to modify attributes
-    Ptr<PointToPointNetDevice> p2pSender1 = DynamicCast<PointToPointNetDevice>(sender1Device);
-    Ptr<PointToPointNetDevice> p2pSender2 = DynamicCast<PointToPointNetDevice>(sender2Device);
+    if (scenario == "AllNewReno")   tcpAlgorithms.assign(g_nFlows, "NewReno");
+    else if (scenario == "AllCubic")    tcpAlgorithms.assign(g_nFlows, "Cubic");
+    else if (scenario == "AllBbr")      tcpAlgorithms.assign(g_nFlows, "Bbr");
+    else if (scenario == "AllDctcp")    { tcpAlgorithms.assign(g_nFlows, "Dctcp"); ecnEnabled = true; }
+    else if (scenario == "RenoVsCubic") { tcpAlgorithms = {"NewReno", "Cubic"}; }
+    else if (scenario == "RenoVsBbr")   { tcpAlgorithms = {"NewReno", "Bbr"}; }
+    else if (scenario == "BbrVsCubic")  { tcpAlgorithms = {"Bbr", "Cubic"}; }
+    else if (scenario == "AllMixed")    { tcpAlgorithms = {"NewReno", "Cubic", "Bbr", "Dctcp"}; ecnEnabled = true; }
+    else { NS_LOG_ERROR("Invalid scenario!"); return 1; }
     
-    // Create ONLY RTT asymmetry - remove bandwidth asymmetry to isolate algorithm differences
-    // Both senders get same high bandwidth, but different RTTs
-    p2pSender1->SetAttribute("DataRate", DataRateValue(DataRate("100Mbps")));  // High bandwidth
-    p2pSender1->GetChannel()->SetAttribute("Delay", TimeValue(Time("5ms")));   // Low RTT
-    
-    p2pSender2->SetAttribute("DataRate", DataRateValue(DataRate("100Mbps")));  // Same high bandwidth
-    p2pSender2->GetChannel()->SetAttribute("Delay", TimeValue(Time("100ms"))); // High RTT (20x difference)
+    if (ecnEnabled) {
+        Config::SetDefault("ns3::TcpL4Protocol::SocketType", StringValue("ns3::TcpDctcp"));
+        Config::SetDefault("ns3::RedQueueDisc::UseEcn", BooleanValue(true));
+    }
 
-    // --- Install Internet Stack ---
+    NodeContainer receiverNodes, routerNodes;
+    g_senderNodes.Create(g_nFlows);
+    receiverNodes.Create(g_nFlows);
+    routerNodes.Create(2);
+    Ptr<Node> leftRouter = routerNodes.Get(0);
+    Ptr<Node> rightRouter = routerNodes.Get(1);
+
+    PointToPointHelper p2pLeaf, p2pRouter;
+    p2pLeaf.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
+    
+    p2pRouter.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    p2pRouter.SetChannelAttribute("Delay", StringValue("20ms"));
+    
+    NetDeviceContainer senderDevices, receiverDevices, routerDevices;
+    for(uint32_t i = 0; i < g_nFlows; ++i) {
+        senderDevices.Add(p2pLeaf.Install(g_senderNodes.Get(i), leftRouter).Get(0));
+    }
+    for(uint32_t i = 0; i < g_nFlows; ++i) {
+        receiverDevices.Add(p2pLeaf.Install(receiverNodes.Get(i), rightRouter).Get(0));
+    }
+    routerDevices = p2pRouter.Install(leftRouter, rightRouter);
+
     InternetStackHelper stack;
-    dumbbell.InstallStack(stack);
+    stack.Install(g_senderNodes);
+    stack.Install(receiverNodes);
+    stack.Install(routerNodes);
 
-    // --- Configure TCP Algorithms AFTER Installing Stack ---
-    TypeId tid1 = TypeId::LookupByName(tcpTypeId1);
-    TypeId tid2 = TypeId::LookupByName(tcpTypeId2);
+    TrafficControlHelper tch;
+    if (ecnEnabled) {
+        tch.SetRootQueueDisc("ns3::RedQueueDisc", "MaxSize", StringValue(std::to_string(bottleneckQueueSize) + "p"));
+    } else {
+        tch.SetRootQueueDisc("ns3::FifoQueueDisc", "MaxSize", StringValue(std::to_string(bottleneckQueueSize) + "p"));
+    }
+    tch.Install(routerDevices);
+
+    if (!ecnEnabled) {
+        for (uint32_t i = 0; i < g_nFlows; ++i) {
+            TypeId tcpTid = TypeId::LookupByName("ns3::Tcp" + tcpAlgorithms[i]);
+            g_senderNodes.Get(i)->GetObject<TcpL4Protocol>()->SetAttribute("SocketType", TypeIdValue(tcpTid));
+        }
+    }
     
-    // Configure TCP algorithms directly on nodes
-    Ptr<TcpL4Protocol> tcp1 = sender1->GetObject<TcpL4Protocol>();
-    Ptr<TcpL4Protocol> tcp2 = sender2->GetObject<TcpL4Protocol>();
+    for (uint32_t i = 0; i < g_nFlows; ++i) {
+        if (asymmetricRtt) {
+            uint32_t delay_ms = 5;
+            if (g_nFlows == 2) {
+                delay_ms = 5 + (i * 45);
+            } else { 
+                delay_ms = 5 + (i * 15);
+            }
+            DynamicCast<PointToPointNetDevice>(senderDevices.Get(i))->GetChannel()->SetAttribute("Delay", TimeValue(Time(std::to_string(delay_ms) + "ms")));
+        } else {
+             DynamicCast<PointToPointNetDevice>(senderDevices.Get(i))->GetChannel()->SetAttribute("Delay", StringValue("5ms"));
+        }
+    }
+
+    Ipv4AddressHelper leftIp, rightIp, routerIp;
+    leftIp.SetBase("10.1.0.0", "255.255.255.0");
+    rightIp.SetBase("10.2.0.0", "255.255.255.0");
+    routerIp.SetBase("10.3.1.0", "255.255.255.0");
+
+    Ipv4InterfaceContainer receiverInterfaces;
+    for(uint32_t i=0; i < g_nFlows; ++i)
+    {
+        NetDeviceContainer link(senderDevices.Get(i), leftRouter->GetDevice(i));
+        Ipv4InterfaceContainer ifaces = leftIp.Assign(link);
+        g_senderInterfaces.Add(ifaces.Get(0));
+        leftIp.NewNetwork(); 
+    }
+    for(uint32_t i=0; i < g_nFlows; ++i)
+    {
+        NetDeviceContainer link(receiverDevices.Get(i), rightRouter->GetDevice(i));
+        Ipv4InterfaceContainer ifaces = rightIp.Assign(link);
+        receiverInterfaces.Add(ifaces.Get(0));
+        rightIp.NewNetwork();
+    }
+    routerIp.Assign(routerDevices);
     
-    tcp1->SetAttribute("SocketType", TypeIdValue(tid1));
-    tcp2->SetAttribute("SocketType", TypeIdValue(tid2));
-
-    // --- IP Address Assignment ---
-    Ipv4AddressGenerator::Reset();
-    dumbbell.AssignIpv4Addresses(Ipv4AddressHelper("10.1.0.0", "255.255.255.0"),
-                                 Ipv4AddressHelper("10.2.0.0", "255.255.255.0"),
-                                 Ipv4AddressHelper("10.3.0.0", "255.255.255.0"));
-
-    // --- Extract IP Address References ---
-    Ipv4Address sender1IpAddress = dumbbell.GetLeftIpv4Address(0);
-    Ipv4Address sender2IpAddress = dumbbell.GetLeftIpv4Address(1);
-    Ipv4Address receiver1IpAddress = dumbbell.GetRightIpv4Address(0);
-    Ipv4Address receiver2IpAddress = dumbbell.GetRightIpv4Address(1);
-
-    // --- Application Setup ---
-    uint16_t sinkPort = 8080;
-
-    // Setup sink applications (one per receiver)
-    PacketSinkHelper sinkHelper("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), sinkPort));
-    ApplicationContainer sink1 = sinkHelper.Install(receiver1);
-    ApplicationContainer sink2 = sinkHelper.Install(receiver2);
-    sink1.Start(Seconds(0.0));
-    sink1.Stop(Seconds(stopTimeSecs));
-    sink2.Start(Seconds(0.0));
-    sink2.Stop(Seconds(stopTimeSecs));
-
-    // Setup sender applications (continuous transmission), we can apply delay to ".Start" to have offsets
-    BulkSendHelper sender1Helper("ns3::TcpSocketFactory", InetSocketAddress(receiver1IpAddress, sinkPort));
-    sender1Helper.SetAttribute("MaxBytes", UintegerValue(0)); // unlimited
-    g_clientApp1 = sender1Helper.Install(sender1);
-    g_clientApp1.Start(Seconds(0.0));
-    g_clientApp1.Stop(Seconds(stopTimeSecs));
-
-    BulkSendHelper sender2Helper("ns3::TcpSocketFactory", InetSocketAddress(receiver2IpAddress, sinkPort));
-    sender2Helper.SetAttribute("MaxBytes", UintegerValue(0)); // unlimited
-    g_clientApp2 = sender2Helper.Install(sender2);
-    g_clientApp2.Start(Seconds(0.0));
-    g_clientApp2.Stop(Seconds(stopTimeSecs));
-
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
-    // --- Setup Flow Monitor and Periodic Measurements ---
-    FlowMonitorHelper flowMonitor;
-    g_monitor = flowMonitor.InstallAll();
-    g_flowMonitorHelper = &flowMonitor;
-    g_sender1IpAddress = sender1IpAddress;
-    g_sender2IpAddress = sender2IpAddress;
+    uint16_t sinkPort = 8080;
+    PacketSinkHelper sinkHelper("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), sinkPort));
+    sinkHelper.Install(receiverNodes).Start(Seconds(0.2));
 
-    // Setup output file
-    std::string filename = "scratch/workspace/results-" + tcpCongAlg1 + "-vs-" + tcpCongAlg2 + ".csv";
-    std::ofstream outputFile(filename);
-    outputFile << std::fixed; // Use fixed-point notation, no scientific notation
-    g_outputFile = &outputFile;
-    
-    outputFile << "# TCP Comparison: " << tcpCongAlg1 << " vs " << tcpCongAlg2 << std::endl;
-    outputFile << "# Simulation time: " << stopTimeSecs << " seconds" << std::endl;
-    outputFile << "TimeInSeconds,Flow1ThroughputBytesPerSecond,Flow2ThroughputBytesPerSecond,Flow1PacketLoss,Flow1PacketLossPercent,Flow2PacketLoss,Flow2PacketLossPercent,JainsFairnessIndex,Sender1CWND,Sender2CWND" << std::endl;
-    // Schedule periodic measurements 
-    double measurementInterval = 0.1;
-    
-    Simulator::Schedule(Seconds(measurementInterval), &ConnectCwndTraces); // small delay to ensure sockets exist, otherwise it doesn't work
-    Simulator::Schedule(Seconds(measurementInterval), &RecordPeriodicStats, measurementInterval);
+    for (uint32_t i = 0; i < g_nFlows; ++i) {
+        BulkSendHelper senderHelper("ns3::TcpSocketFactory", InetSocketAddress(receiverInterfaces.GetAddress(i), sinkPort));
+        senderHelper.SetAttribute("MaxBytes", UintegerValue(0)); 
+        senderHelper.Install(g_senderNodes.Get(i)).Start(Seconds(0.2));
+    }
 
-    // --- Run Simulation ---
+    FlowMonitorHelper flowmonHelper;
+    g_monitor = flowmonHelper.InstallAll();
+    g_flowMonitorHelper = &flowmonHelper;
+
+    std::ofstream outputFileStream(outputFile);
+    g_outputFile = &outputFileStream;
+    *g_outputFile << "Time";
+    for(uint32_t i=0; i<g_nFlows; ++i) *g_outputFile << ",Flow" << i+1 << "_" << tcpAlgorithms[i] << "_Bps";
+    for(uint32_t i=0; i<g_nFlows; ++i) *g_outputFile << ",Flow" << i+1 << "_PktLoss";
+    for(uint32_t i=0; i<g_nFlows; ++i) *g_outputFile << ",Flow" << i+1 << "_Cwnd";
+    *g_outputFile << ",JainsFairnessIndex" << std::endl;
+    
+    Simulator::Schedule(Seconds(0.3), &ConnectCwndTraces);
+    Simulator::Schedule(Seconds(0.4), &RecordPeriodicStats, 0.1);
+
     Simulator::Stop(Seconds(stopTimeSecs));
     Simulator::Run();
-
-    outputFile.close();
-    std::cout << "Results saved to " << filename << std::endl;
-
     Simulator::Destroy();
+
+    outputFileStream.close();
+    std::cout << "Simulation finished. Results saved to " << outputFile << std::endl;
     return 0;
 }
