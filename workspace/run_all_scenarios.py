@@ -5,7 +5,8 @@ import concurrent.futures
 import multiprocessing
 import random
 
-NUM_SIMULATIONS = 10
+NUM_SIMULATIONS = 3
+MAX_WORKERS = 4
 
 
 # Define a worker function to run a single simulation
@@ -94,7 +95,7 @@ def main():
                 simulation_params.append((scenario, rtt_asym, sim_run, ROOT))
 
     # Determine the number of workers (use 75% of available cores, minimum 1)
-    max_workers = max(1, int(multiprocessing.cpu_count() * 0.75))
+    max_workers = max(1, int(multiprocessing.cpu_count() * 0.75), MAX_WORKERS)
     print(f"Using {max_workers} parallel workers")
 
     # Run simulations in parallel

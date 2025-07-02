@@ -91,8 +91,8 @@ int main(int argc, char* argv[])
 
     std::string scenario = "AllCubic", outputFile = "scratch/workspace/results.csv";
     bool asymmetricRtt = false;
-    double stopTimeSecs = 20.0;
-    uint32_t bottleneckQueueSize = 100;
+    double stopTimeSecs = 200.0;
+    uint32_t bottleneckQueueSize = 10;
     uint32_t seed = 1;
 
     CommandLine cmd;
@@ -235,7 +235,7 @@ int main(int argc, char* argv[])
     *g_outputFile << ",JainsFairnessIndex" << std::endl;
     
     Simulator::Schedule(Seconds(0.3), &ConnectCwndTraces);
-    Simulator::Schedule(Seconds(0.4), &RecordPeriodicStats, 0.1);
+    Simulator::Schedule(Seconds(0.4), &RecordPeriodicStats, 1);
 
     Simulator::Stop(Seconds(stopTimeSecs));
     Simulator::Run();
