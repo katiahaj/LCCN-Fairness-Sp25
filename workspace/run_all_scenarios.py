@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import concurrent.futures
 import multiprocessing
+import random
 
 NUM_SIMULATIONS = 10
 
@@ -17,7 +18,7 @@ def run_simulation(params):
     experiment_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate random seed for this run
-    # seed = 42  # random.randint(1, 1_000_000)
+    seed = random.randint(1, 1_000_000)
 
     output_file = experiment_dir / f"run_{sim_run:03d}.csv"
 
@@ -28,7 +29,7 @@ def run_simulation(params):
         "--",  # The separator for ns-3 options vs. script options
         f"--scenario={scenario}",
         f"--asymmetricRtt={rtt_flag}",
-        # f"--seed={seed}",
+        f"--seed={seed}",
         f"--outputFile={output_file}",
     ]
 
@@ -90,9 +91,7 @@ def main():
     for scenario in scenarios:
         for rtt_asym in rtt_configs:
             for sim_run in range(1, NUM_SIMULATIONS + 1):
-                simulation_params.append(
-                    (scenario, rtt_asym, sim_run, total_runs, ROOT)
-                )
+                simulation_params.append((scenario, rtt_asym, sim_run, ROOT))
 
     # Determine the number of workers (use 75% of available cores, minimum 1)
     max_workers = max(1, int(multiprocessing.cpu_count() * 0.75))

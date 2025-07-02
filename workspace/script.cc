@@ -93,6 +93,7 @@ int main(int argc, char* argv[])
     bool asymmetricRtt = false;
     double stopTimeSecs = 20.0;
     uint32_t bottleneckQueueSize = 100;
+    uint32_t seed = 1;
 
     CommandLine cmd;
     cmd.AddValue("scenario", "TCP scenario", scenario);
@@ -100,7 +101,11 @@ int main(int argc, char* argv[])
     cmd.AddValue("stopTime", "Stop time for applications", stopTimeSecs);
     cmd.AddValue("queueSize", "Bottleneck queue size", bottleneckQueueSize);
     cmd.AddValue("outputFile", "File path to save results", outputFile);
+    cmd.AddValue("seed", "Random seed for simulation", seed);
     cmd.Parse(argc, argv);
+
+    // Set the random seed
+    RngSeedManager::SetSeed(seed);
 
     if (scenario == "AllMixed") {
         g_nFlows = 4;
