@@ -89,7 +89,7 @@ int main(int argc, char* argv[])
     Config::SetDefault("ns3::TcpSocket::InitialSlowStartThreshold", UintegerValue(65535));
     GlobalValue::Bind("ChecksumEnabled", BooleanValue(false));
 
-    std::string scenario = "AllCubic", outputFile = "/workspace/results.csv";
+    std::string scenario = "AllCubic", outputFile = "scratch/workspace/results.csv";
     bool asymmetricRtt = false;
     double stopTimeSecs = 20.0;
     uint32_t bottleneckQueueSize = 100;
