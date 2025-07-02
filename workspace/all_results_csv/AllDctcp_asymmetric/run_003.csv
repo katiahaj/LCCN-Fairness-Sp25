@@ -1,4 +1,4 @@
-Time,Flow1_Dctcp_Bps,Flow2_Dctcp_Bps,Flow1_PktLoss,Flow2_PktLoss,Flow1_Cwnd,Flow2_Cwnd,JainsFairnessIndex
+Time,Dctcp_1_Bps,Dctcp_2_Bps,Dctcp_1_PktLoss,Dctcp_2_PktLoss,Dctcp_1_Cwnd,Dctcp_2_Cwnd,JainsFairnessIndex
 0.4,691080,560,18,11,53576,14480,0.50081
 0.5,1.095e+06,150520,24,14,66983,24616,0.634912
 0.6,975000,270000,41,0,69879,27512,0.757199

@@ -1,4 +1,4 @@
-Time,Flow1_NewReno_Bps,Flow2_Cubic_Bps,Flow1_PktLoss,Flow2_PktLoss,Flow1_Cwnd,Flow2_Cwnd,JainsFairnessIndex
+Time,NewReno_1_Bps,Cubic_2_Bps,NewReno_1_PktLoss,Cubic_2_PktLoss,NewReno_1_Cwnd,Cubic_2_Cwnd,JainsFairnessIndex
 0.4,631080,560,3,11,31856,14480,0.500887
 0.5,765000,150520,30,18,66732,27512,0.689425
 0.6,975000,270000,33,0,67782,27512,0.757199

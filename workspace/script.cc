@@ -229,9 +229,12 @@ int main(int argc, char* argv[])
     std::ofstream outputFileStream(outputFile);
     g_outputFile = &outputFileStream;
     *g_outputFile << "Time";
-    for(uint32_t i=0; i<g_nFlows; ++i) *g_outputFile << ",Flow" << i+1 << "_" << tcpAlgorithms[i] << "_Bps";
-    for(uint32_t i=0; i<g_nFlows; ++i) *g_outputFile << ",Flow" << i+1 << "_PktLoss";
-    for(uint32_t i=0; i<g_nFlows; ++i) *g_outputFile << ",Flow" << i+1 << "_Cwnd";
+    for (uint32_t i = 0; i < g_nFlows; ++i)
+        *g_outputFile << "," << tcpAlgorithms[i] << "_" << i + 1 << "_Bps";
+    for (uint32_t i = 0; i < g_nFlows; ++i)
+        *g_outputFile << "," << tcpAlgorithms[i] << "_" << i + 1 << "_PktLoss";
+    for (uint32_t i = 0; i < g_nFlows; ++i)
+        *g_outputFile << "," << tcpAlgorithms[i] << "_" << i + 1 << "_Cwnd";
     *g_outputFile << ",JainsFairnessIndex" << std::endl;
     
     Simulator::Schedule(Seconds(0.3), &ConnectCwndTraces);

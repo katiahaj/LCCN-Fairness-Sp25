@@ -5,6 +5,15 @@ from pathlib import Path
 from typing import Dict, List
 
 
+# Human-readable axis labels mapping
+UNIT_LABELS = {
+    "Bps": "Throughput (Bytes/s)",
+    "PktLoss": "Packet Loss (pkts)",
+    "Cwnd": "CWND (segments)",
+    "JainsFairnessIndex": "Jain's Fairness Index",
+}
+
+
 def setup_plot_style():
     """Configure matplotlib and seaborn styling."""
     plt.style.use("seaborn-v0_8")
@@ -13,50 +22,52 @@ def setup_plot_style():
     plt.rcParams["font.size"] = 10
 
 
-def parse_column_pairs(columns: List[str]) -> Dict[str, List[str]]:
-    """Group columns into pairs (Flow1/Flow2) and singles."""
-    pairs = {}
-    singles = []
+def parse_flow_metrics(columns: List[str]) -> Dict[str, List[str]]:
+    """Group flow-related columns by metric suffix.
 
-    # Extract base metrics (remove Flow1_/Flow2_ prefixes)
-    flow_cols = [col for col in columns if col.startswith(("Flow1_", "Flow2_"))]
+    Returns dict where key is metric suffix (e.g., 'Bps') and value is list of columns
+    belonging to that metric (e.g., ['Bbr_1_Bps', 'Cubic_2_Bps']). Also returns list of
+    non-flow single-value metrics.
+    """
+    metric_groups: Dict[str, List[str]] = {}
+    singles: List[str] = []
 
-    for col in flow_cols:
-        if col.startswith("Flow1_"):
-            base_metric = col[6:]  # Remove 'Flow1_'
-            flow2_col = f"Flow2_{base_metric}"
-            if flow2_col in columns:
-                if base_metric not in pairs:
-                    pairs[base_metric] = []
-                pairs[base_metric] = [col, flow2_col]
+    for col in columns:
+        if col == "Time":
+            continue
+        parts = col.split("_")
+        if len(parts) >= 2 and parts[-1] in {"Bps", "PktLoss", "Cwnd"}:
+            suffix = parts[-1]
+            metric_groups.setdefault(suffix, []).append(col)
+        else:
+            singles.append(col)
 
-    # Non-flow columns
-    singles = [
-        col for col in columns if not col.startswith(("Flow1_", "Flow2_", "Time"))
-    ]
-
-    return pairs, singles
+    return metric_groups, singles
 
 
-def plot_paired_metrics(
-    df: pd.DataFrame, metric: str, cols: List[str], save_dir: Path, experiment: str
+def plot_metric_group(
+    df: pd.DataFrame,
+    metric_suffix: str,
+    cols: List[str],
+    save_dir: Path,
+    experiment: str,
 ):
-    """Plot paired flow metrics on the same chart."""
+    """Plot all flow columns that share the same metric suffix on one chart."""
     plt.figure(figsize=(10, 6))
 
     for col in cols:
-        flow_num = col.split("_")[0]
-        label = f"{flow_num} {metric}"
+        label = col.rsplit("_", 1)[0]  # everything except the metric suffix
         plt.plot(df["Time"], df[col], label=label, linewidth=2)
 
     plt.xlabel("Time (seconds)")
-    plt.ylabel(metric.replace("_", " ").title())
-    plt.title(f"{experiment} - {metric.replace('_', ' ').title()} Comparison")
+    ylabel = UNIT_LABELS.get(metric_suffix, metric_suffix)
+    plt.ylabel(ylabel)
+    plt.title(f"{experiment} - {ylabel}")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
 
-    filename = save_dir / f"{experiment}_{metric}_comparison.png"
+    filename = save_dir / f"{experiment}_{metric_suffix}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
 
@@ -71,7 +82,7 @@ def plot_single_metrics(
         plt.figure(figsize=(10, 6))
         plt.plot(df["Time"], df[metric], linewidth=2, color="steelblue")
         plt.xlabel("Time (seconds)")
-        plt.ylabel(metric.replace("_", " ").title())
+        plt.ylabel(UNIT_LABELS.get(metric, metric))
         plt.title(f"{experiment} - {metric.replace('_', ' ').title()}")
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -85,7 +96,7 @@ def plot_single_metrics(
 
 def create_stacked_overview(
     df: pd.DataFrame,
-    pairs: Dict[str, List[str]],
+    metric_groups: Dict[str, List[str]],
     singles: List[str],
     save_dir: Path,
     experiment: str,
@@ -93,7 +104,7 @@ def create_stacked_overview(
     """Create a vertically stacked overview of all metrics."""
 
     # Calculate number of subplots needed
-    n_plots = len(pairs) + len(singles)
+    n_plots = len(metric_groups) + len(singles)
     if n_plots == 0:
         return
 
@@ -105,24 +116,23 @@ def create_stacked_overview(
 
     plot_idx = 0
 
-    # Plot paired metrics
-    for metric, cols in pairs.items():
+    # Plot flow metric groups
+    for metric_suffix, cols in metric_groups.items():
         ax = axes[plot_idx]
         for col in cols:
-            flow_num = col.split("_")[0]
-            label = f"{flow_num} {metric}"
+            label = col.rsplit("_", 1)[0]
             ax.plot(df["Time"], df[col], label=label, linewidth=2)
 
-        ax.set_ylabel(metric.replace("_", " ").title())
+        ax.set_ylabel(UNIT_LABELS.get(metric_suffix, metric_suffix))
         ax.legend(loc="upper right")
         ax.grid(True, alpha=0.3)
         plot_idx += 1
 
-    # Plot single metrics
+    # Plot non-flow single metrics (e.g., Jain's Index)
     for metric in singles:
         ax = axes[plot_idx]
         ax.plot(df["Time"], df[metric], linewidth=2, color="steelblue")
-        ax.set_ylabel(metric.replace("_", " ").title())
+        ax.set_ylabel(UNIT_LABELS.get(metric, metric))
         ax.grid(True, alpha=0.3)
         plot_idx += 1
 
@@ -158,18 +168,18 @@ def process_experiment(csv_file: Path, output_dir: Path):
     exp_dir.mkdir(exist_ok=True)
 
     # Parse columns into pairs and singles
-    pairs, singles = parse_column_pairs(df.columns.tolist())
+    metric_groups, singles = parse_flow_metrics(df.columns.tolist())
 
-    # Generate paired plots
-    for metric, cols in pairs.items():
-        plot_paired_metrics(df, metric, cols, exp_dir, experiment)
+    # Plot each metric group (could be 2+ flows)
+    for metric_suffix, cols in metric_groups.items():
+        plot_metric_group(df, metric_suffix, cols, exp_dir, experiment)
 
-    # Generate single metric plots
+    # Plot non-flow single metrics (e.g., Jain's Index)
     if singles:
         plot_single_metrics(df, singles, exp_dir, experiment)
 
-    # Generate stacked overview
-    create_stacked_overview(df, pairs, singles, exp_dir, experiment)
+    # Generate stacked overview using the new grouping
+    create_stacked_overview(df, metric_groups, singles, exp_dir, experiment)
 
     print(f"  Completed: {experiment}\n")
 

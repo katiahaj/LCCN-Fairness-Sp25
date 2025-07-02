@@ -1,4 +1,4 @@
-Time,Flow1_NewReno_Bps,Flow2_Cubic_Bps,Flow3_Bbr_Bps,Flow4_Dctcp_Bps,Flow1_PktLoss,Flow2_PktLoss,Flow3_PktLoss,Flow4_PktLoss,Flow1_Cwnd,Flow2_Cwnd,Flow3_Cwnd,Flow4_Cwnd,JainsFairnessIndex
+Time,NewReno_1_Bps,Cubic_2_Bps,Bbr_3_Bps,Dctcp_4_Bps,NewReno_1_PktLoss,Cubic_2_PktLoss,Bbr_3_PktLoss,Dctcp_4_PktLoss,NewReno_1_Cwnd,Cubic_2_Cwnd,Bbr_3_Cwnd,Dctcp_4_Cwnd,JainsFairnessIndex
 0.4,616080.0,151080.0,151080.0,560.0,23.0,18.0,0.0,11.0,53576.0,27512.0,14480.0,14480.0,0.496345
 0.5,825000.0,270000.0,0.0,150520.0,24.0,36.0,18.0,0.0,65535.0,53576.0,27512.0,14480.0,0.49966399999999994
 0.6,525000.0,465000.0,270000.0,0.0,32.0,29.0,36.0,18.0,66983.0,65535.0,53576.0,27512.0,0.702789
