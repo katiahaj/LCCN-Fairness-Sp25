@@ -140,7 +140,7 @@ int main(int argc, char* argv[])
     Ptr<Node> rightRouter = routerNodes.Get(1);
 
     PointToPointHelper p2pLeaf, p2pRouter;
-    p2pLeaf.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
+    p2pLeaf.SetDeviceAttribute("DataRate", StringValue("1000Mbps"));
     
     p2pRouter.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
     p2pRouter.SetChannelAttribute("Delay", StringValue("20ms"));
